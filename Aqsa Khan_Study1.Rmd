@@ -1,0 +1,627 @@
+---
+title: "Studying Association of Hypertension with Potential Risk Factors"
+author: "Aqsa Khan"
+date: "`r Sys.Date()`"
+linkcolor: blue
+output:
+  rmdformats::readthedown:
+    highlight: kate
+    number_sections: true
+    code_folding: show
+    code_download: true
+---
+
+
+
+# Setup and Data Ingest
+
+## Initial Setup and Package Loads 
+
+```{r, cache=FALSE, message = FALSE, warning = FALSE}
+
+library(nhanesA)
+library(knitr) 
+library(rmdformats)
+library(car)
+library(equatiomatic)
+library(gt)
+library(gtExtras)
+library(ggrepel)
+library(ggdist)
+library(janitor)
+library(naniar)
+library(broom)
+library(patchwork)
+library(kableExtra)
+library(readxl)
+library(Epi)
+library(Hmisc)
+library(tidyverse)  
+
+## Load Love-boost 
+source("Love-boost.R")
+
+## Global options
+knitr::opts_chunk$set(comment = NA)
+
+theme_set(theme_bw())
+```
+
+
+## Loading the raw data
+
+```{R, message=FALSE, warning= FALSE}
+demo_raw <- nhanes('P_DEMO') %>% tibble()%>% clean_names()
+sbp_raw <- nhanes("P_BPXO")%>% tibble()%>% clean_names()
+salt_raw <- nhanes("P_DR1TOT")%>% tibble()%>% clean_names()
+hypertension_raw <- nhanes("P_BPQ")%>% tibble()%>% clean_names()
+tobacco_raw <- nhanes("P_SMQRTU")%>% tibble()%>% clean_names()
+weight_raw <- nhanes("P_WHQ")%>% tibble()%>% clean_names()
+activity_raw <- nhanes("P_PAQ")%>% tibble()%>% clean_names()  
+```
+
+## Contents of the Raw Tibbles
+
+We have seven tibbles now.
+
+- `demo_raw` contains data on all 29 variables for 15560 subjects.
+
+```{r}
+dim(demo_raw)
+```
+
+- `sbp_raw` contains data on 12 of the variables for 11656 subjects.
+
+```{r}
+dim(sbp_raw)
+```
+
+- `salt_raw` contains data on 168 of the variables for 14300 subjects.
+
+```{r}
+dim(salt_raw)
+```
+
+- `hypertension_raw` contains data on 11 of the variables for 10195 subjects.
+
+```{r}
+
+dim(hypertension_raw)
+```
+
+- `tobacco_raw` contains data on 25 of the variables for 10409 subjects.
+
+```{r}
+dim(tobacco_raw)
+
+```
+- `weight_raw` contains data on 35 of the variables for 10195 subjects.
+
+```{r}
+
+dim(weight_raw)
+```
+- `activity_raw` contains data on 17 of the variables for 9693 subjects.
+
+```{r}
+dim(activity_raw)
+
+```
+
+## Two Merging Steps
+
+1. Selecting all the variables that I'll be using in my study. 
+
+```{r}
+demo <- demo_raw %>% select(seqn, ridstatr, ridageyr, riagendr) %>%
+  filter(ridstatr==2) %>% 
+  filter(ridageyr %in% (18:70))
+
+sbp <- sbp_raw |> select(seqn, bpxosy1)
+  
+
+salt <- salt_raw |> select(seqn, drqsprep) 
+
+hypertension <- hypertension_raw |> select(seqn, bpq020) 
+
+tobacco <- tobacco_raw |> select(seqn, smq681)
+
+weight <- weight_raw |> select(seqn, whq030) 
+
+activity <- activity_raw |> select(seqn, paq605)
+
+```
+
+
+2. Joining these variables to form a data set 
+
+```{r merge_step1}
+
+temp_1 <- left_join(demo, sbp, by="seqn")
+temp_2 <- left_join(temp_1, salt, by="seqn")
+temp_3 <- left_join(temp_2, hypertension, by="seqn")
+temp_4 <- left_join(temp_3, tobacco, by="seqn")
+temp_5 <- left_join(temp_4, weight, by="seqn")
+temp_6 <- left_join(temp_5, activity, by="seqn") 
+dim(temp_6)
+clean_names(temp_6)
+
+```
+
+
+
+## Checking the Merge
+
+Checking to ensure that the number of distinct (unique) subject identification codes (shown below) matches the number of rows. Those two values should be identical. 
+
+```{r}
+identical(n_distinct(temp_6$seqn), 
+         temp_6 |> nrow())
+```
+
+All right. Our merge was successful.
+
+# Checking for missingness
+
+```{r}
+
+miss_var_summary(temp_6)
+
+```
+I have assumed that my data is missing completely at random (MCAR). For further analysis, I'll be using only complete cases. 
+
+## Dropping all the Null values
+
+
+```{r variable_selection}
+temp_6[temp_6 ==9 ] <- NA
+temp_6[temp_6==7] <- NA
+temp_6 |> drop_na()
+
+study1_m <- temp_6 |> select(seqn, ridstatr, ridageyr, riagendr, bpxosy1, drqsprep, bpq020, smq681, whq030, paq605) |> drop_na()
+```
+
+
+# Cleaning the Data
+
+## Study Variables
+
+The 7 study variables that we will actually use in this demonstration are listed below. 
+
+### Sequence Variable
+
+Each subject has a unique sequence id. 
+
+1. `seqn` is the sequence id unique to each subject. 
+
+### Quantitative Variables
+
+2. `bpxosy1`: Systolic - 1st oscillometric reading in mmHg
+
+### Binary Variables
+
+3. `paq605`: Does your work involve vigorous-intensity activity? (Yes, No)
+4. `bpq020`: Ever told you had high blood pressure? (Yes, No)
+5. `smq681` : Ever smoked tobacco in the last five days? (Yes, No)
+
+
+### Multi-Categorical Variables
+
+6. `drqsprep` : Salt used in preparation? (Available responses were- 1.Never, 2.Rarely, 3.Occasionally, 4.Very often) 
+7. `whq030` : How do you consider you weight? (Available responses - 1.Overweight, 2. Underweight, 3. Ideal Weight)
+
+Note that we've already checked our subject identification codes to ensure that we have no missing values there and that we have a unique identifier for each row in the data back when we did the merge.
+
+## Checking our Quantitative Variables
+
+I have a quantitative variable. I want to check the range (minimum and maximum) plus missingness, to ensure that we have no impossible or missing values.
+
+```{r, message = FALSE}
+
+study1_m |> select(bpxosy1)|>
+  mosaic::inspect()
+```
+
+- For this variable, all values are in the range, as they must be.
+
+## Checking our Binary Variables
+
+We have four binary variables.
+
+```{r}
+study1_m |> select(riagendr, smq681, bpq020, paq605) |> summary()
+```
+
+I'd like those to be factors in R, rather than characters. 
+
+```{r change_order_no-yes_variables}
+
+study1_m <- study1_m %>% mutate(riagendr_f = fct_recode(factor(riagendr), 
+"Male" = "1", "Female" = "2"),
+riagendr_f= fct_relevel(riagendr_f, "Male"))
+study1_m %>% tabyl(riagendr_f)
+
+
+study1_m <- study1_m %>% mutate(smq681_f = fct_recode(factor(smq681), 
+"Smoker" = "1", "Non-smoker" = "2"),
+smq681_f=fct_relevel(smq681_f, "Smoker"))
+study1_m %>% tabyl(smq681_f)
+
+
+study1_m <- study1_m %>% mutate(bpq020_f = fct_recode(factor(bpq020), 
+"Hypertension" = "1", "No Hypertension" = "2"),
+bpq020_f= fct_relevel(bpq020_f, "Hypertension"))
+study1_m %>% tabyl(bpq020_f)
+
+study1_m <- study1_m %>% mutate(paq605_f = fct_recode(factor(paq605),
+"Yes" = "1", "No" = "2"),
+paq605_f= fct_relevel(paq605_f, "Yes"))
+study1_m %>% tabyl(paq605_f)
+
+
+study1_m |> select(riagendr_f, smq681_f, bpq020_f, paq605_f) |> summary()
+```
+
+OK. No missingness, and no values out of the range of our expectations. Good.
+
+## Checking our Multi-Category Variables
+
+For each of our multi-categorical variables, I'll run a quick `tabyl` to see if we have any surprising results or missing values. Then I'll revise each of them (as needed) to have more suitable (mostly, shorter) level names. In addition to checking for missingness and inappropriate values, we want to collapse some categories, or adjust names or labeling to mirror what we need in our analyses.
+
+### The `whq030` variable
+
+```{r}
+
+study1_m <- study1_m |> mutate(whq030_f= fct_recode(factor(whq030),
+"Overweight" = "3", "Underweight" = "2", "Ideal_weight" = "1"),
+whq030_f = fct_relevel(whq030_f, "Ideal weight"))
+study1_m |> tabyl(whq030_f)
+
+study1_m |> count(whq030, whq030_f)
+```
+
+### The `drqsprerp` variable
+
+```{r recode_grades_information}
+study1_m <- study1_m |> mutate(drqsprep_f = fct_recode(factor(drqsprep),
+"Never"= "1", "Rarely" = "2", "Occasionally" = "3", "Very Often" = "4"),
+drqsprep_f= fct_relevel(drqsprep_f, "Never"))
+study1_m |> tabyl(drqsprep_f)
+
+study1_m |> count(drqsprep, drqsprep_f)
+```
+
+- That looks like we've correctly renamed the values.
+- We have no missing value here.
+
+
+## Creating the Analytic Tibble
+
+So my analytic tibble, which I'll call `study1` should contains only the ten variables that appear in our code book.
+
+```{r create_sur15}
+
+study1 <- study1_m |> select(seqn, ridstatr, ridageyr, riagendr_f, bpxosy1, drqsprep_f, bpq020_f, smq681_f, whq030_f, paq605_f) |> glimpse()
+```
+
+## List of Missing Values
+
+We can count the number of missing observations in each variable, with ...
+
+```{r na_pattern_in_sur15}
+miss_var_summary(study1)
+```
+
+We can see the subjects do not have missing values.
+
+## Analytic Tibble
+
+Now, I'll prove that `study1` is a tibble by printing it.
+
+```{r}
+study1
+```
+
+## Data Summary
+
+Here's a summary of the `study1` tibble.
+
+```{r}
+describe(study1)
+```
+
+# Codebook and Data Description
+
+## Codebook
+
+The variables in our data set `study1` for this demonstration are as follows. The Type column indicates the number of levels in each categorical (factor) variable. I'm using Quant to indicate quantitative variables, and Cat-x indicates a categorical variable (factor) with x levels.
+
+Variable      | Type  | Description / Levels
+---------     | :---: | --------------------------------------------
+`seqn`        | ID    | subject code (109266-124821)
+`ridstatr`    | Numeric| Only one Numeric value (2)      |
+`ridageyr`    | Quant | Age (18-79 years)
+`riagendr_f`  | Cat-2 | Gender (Female, Male)
+`bpxosy1`     | Quant | Systolic- 1st Oscillometric reading
+`paq605_f`    | Cat-2 | Does work involve vigorous-intensity activity? (Yes, No)
+`baq020_f`    | Cat-2 | Ever told by a physician you had high blood pressure? (Yes, No)
+`smq681_f`    | Cat-2 | Smoked tobacco last 5 days? (Yes, No)
+`drsqprep_f`  | Cat-4 | Salt used in preparation? (Never, Rarely, Occasionally, Very Often)
+`whq030_f`    | Cat-3 | How do you consider you weight? (Overweight, Underweight, Ideal Weight)
+
+
+
+# Analysis B: Compare 2 Population Means using Independent Samples
+
+## The Question
+
+I'll compare `bpxosy1` by `paq605_f` in this analysis using independent samples. We're comparing the mean `bpxosy1` of the population represented by respondents who do vigorous physical activity to the mean `bxosy1` of the population represented by the respondents who aren't involved in any vigorous physical activity. There is nothing to suggest that the two samples are paired or matched in any way. Plus, as we'll see, there are different numbers of physically active and physically inactive subjects, so there's no way their `bpxosy1` values could be paired. As a result, I'm going to be interested in looking at the two samples separately to help us understand issues related to hypothesis testing assumptions.
+
+Our research question is:
+
+Did subjects who are physically active have meaningfully different systolic blood pressure values than subjects who aren't physically active?
+
+## Describing the Data
+
+I'll start by looking at the range of the `bpxosy1` data within each activity group
+
+```{r bmi_by_english, message = FALSE}
+analysis_b <- study1 |> select(seqn, ridstatr, ridageyr, riagendr_f, bpxosy1, drqsprep_f, bpq020_f, smq681_f, whq030_f, paq605_f)
+
+mosaic::favstats(bpxosy1 ~ paq605_f, data = analysis_b) |>
+    kable(dig=2) |> kable_styling(font_size = 18) 
+```
+
+We have 1771 subjects who are involved in intense physical activity, while 4528 subjects are not physically active. However, the average systolic blood pressure in both these categories is almost similar, while the median is different.
+
+### Graphical Summaries
+
+Let's build a comparison boxplot (with notches and violins) to start.
+
+```{r boxplot_for_b, message = FALSE}
+
+p1 <- ggplot(data = analysis_b, aes(x = paq605_f, y = bpxosy1)) +
+  geom_violin(aes(fill = paq605_f)) +
+  geom_boxplot(width = 0.3) +
+  scale_fill_viridis_d(begin = 0.7, option = "A") +
+  guides(fill = "none", col = "none") +
+  coord_flip()+
+  labs(title = "Systolic Blood Pressure by Vigorous Physical Activity",
+       subtitle= "In 6299 adults",
+       caption = "2017-2020",
+       x = "Involvement in vigorous physical activity", y = "Systolic Blood pressure (in mm Hg)")
+p1
+```
+
+There are at least a couple of candidate outliers in each group on the high end, which suggest some potential for meaningful skew. 
+
+We could also build a pair of Normal Q-Q plots.
+
+```{r qqplots_for_b, message=FALSE, warning=FALSE}
+ggplot(analysis_b, aes(sample = bpxosy1, col = paq605_f)) +
+  geom_qq() + geom_qq_line() +
+  facet_wrap(~ paq605_f, labeller = "label_both") +
+  guides(col = FALSE) +
+  guides(scale = "none" ) +
+  theme_bw() +
+  labs(y = "Observed SBP values",
+       title = "SBP isn't well fit by a Normal model in either group")
+```
+
+The Normal q-q plot suggests right skew distribution in both the categories. There's room for concern about whether a test that requires Normal distributions in the populations is a good choice here. 
+
+## Main Analysis
+
+As you'll recall, we have three main methods for building confidence intervals in an independent samples analysis:
+
+- Welch's t test (t test without assuming equal variances)
+- The Pooled t test (t test with equal variances assumed)
+- The Bootstrap, using `bootdif`
+
+
+### The Bootstrap for comparing means from two independent samples
+
+The other approach we have for independent samples comparisons that doesn't require Normality is the bootstrap, and specifically, the `bootdif` function. This approach returns to estimating the difference in population means, but gives a different answer depending on the choice of random number seed. Here is a 90% confidence interval for the difference between the physically active and physically non-active population `bpxosy1` distributions based on the bootstrap.
+
+```{r bootdif_for_B}
+set.seed(4312022)
+s_bootstrap <- bootdif(analysis_b$bpxosy1, analysis_b$paq605_f, conf.level = 0.90)
+s_bootstrap
+```
+
+- The population mean sbp in those who are physically active is estimated to be about 0.596 points lower than the population mean sbp for those who aren't physically active, based on our samples. So the mean differences' point estimate is 0.596
+- Our 90% confidence interval for the difference (Yes - No) of the population means is (-1.407, 0.211).
+- Here, I've assumed a two-sided confidence interval procedure. We conclude from the confidence interval that the difference between the true means of the physically active and not active `bpxosy1` levels could be either positive or negative, according to our analysis.
+- The assumptions of this bootstrap procedure are:
+    + that the samples in each group are drawn independently of each other, 
+    + *and* that the samples in each group represent a random sample of the population of interest. 
+
+So, I think the bootstrap procedure would be most appropriate here, due to the non-Normality (and in particular the asymmetry) in the samples. 
+
+## Conclusions
+
+We find a range of possible values which crosses zero for the difference between the population mean sbp for those who are physically active and not active, based on our sample of respondents with complete data on sbp. This conclusion is motivated by a bootstrap estimate to compare the two groups with complete data on sbp. I feel this is the most justified approach based on the apparent skew in the data.
+
+# Analysis C: Comparing 3+ Population ranks via Kruskal Wallis 
+
+## The Question
+
+Is the distribution of systolic blood pressure same across the four categories of salt intake? 
+
+## Describing the Data
+
+I'll start by looking at the range of the `bpxosy1` data within each `drqsprerp` (salt used in preparation) group.
+
+```{r, message = FALSE}
+analysis_c <- study1 |> select(seqn, ridstatr, ridageyr, riagendr_f, bpxosy1, drqsprep_f, bpq020_f, smq681_f, whq030_f, paq605_f)
+
+mosaic::favstats(bpxosy1 ~ drqsprep_f, data = analysis_c) |>
+    kable(dig=2) |> kable_styling(font_size = 18) 
+```
+
+
+### Graphical Summaries
+
+Since we are exploring the distributions of three independent samples, I'll plot each of the groups in a comparison boxplot, as a start.
+
+```{r comparison_boxplot_analysis_2, warning=FALSE}
+ggplot(analysis_c, aes(x = drqsprep_f, y = bpxosy1, fill = drqsprep_f)) +
+  geom_violin(alpha = 0.3) +
+  geom_boxplot(width = 0.3) +
+  coord_flip() +
+  guides(fill = FALSE) +
+  theme_bw() +
+  labs(title = "Salt intake vs Systolic BlooD Pressure",
+       y = "Systolic Blood Pressure (mm Hg)",
+       x = "")
+```
+
+
+- The individual category data look as though they may be right skewed with potential outliers. 
+- I expect that a Kruskal-Wallis approach may also be useful here.
+
+### Numerical Summaries
+
+
+```{r num_summaries_analysis2, message = FALSE}
+
+mosaic::favstats(bpxosy1 ~ drqsprep_f, data = analysis_c) |>
+    kable(dig=2) |> kable_styling(font_size = 18) 
+```
+
+## Main Analysis
+
+We have at least two available methods for building statistical inferences when comparing more than two independent samples.
+
+- Analysis of Variance
+- The Kruskal-Wallis Test
+
+I'll build hypothesis tests, and compare the distributions of `BPXOSY1` across levels of `salt intake` using a 90% confidence level.
+
+### Kruskal-Wallis Test
+
+I'll start with the Kruskal-Wallis test, which at least doesn't require me to assume Normality in the three populations. The null hypothesis here is that there is no location shift in the distributions of systolic blood pressure across the four levels of `salt intake`. Put another way, the location parameters of the distributions are the same across the four `salt intake` levels. The Kruskal-Wallis test is the extension of the Wilcoxon-Mann-Whitney rank sum test to studies involving more than two independent samples.
+
+```{r kruskal-wallis_test_for_2}
+kruskal.test(bpxosy1 ~ drqsprep_f, data = analysis_c)
+```
+
+- This result suggests only that the separation we observe between the systolic blood pressure values for the four salt intake categories is consistent with some true differences between those groups. 
+
+
+## Conclusions
+
+The distribution of systolic blood pressure same across the four categories of salt intake is statistically different. Another approach to answer my research question could have been doing a transformation of my outcome and then running an anova and TukeyHSD. 
+
+# Analysis D: Two-Way (2 x 2) Contingency Table
+
+## The Question
+
+We'll look at the association of `smoking` with `hypertension` in this analysis. 
+
+## Describing the Data
+
+Let's look at the 2x2 table we get. 
+
+```{r english_vs_priorr}
+analysis_d <- study1 |> select(seqn, ridstatr, ridageyr, riagendr_f, bpxosy1, drqsprep_f, bpq020_f, smq681_f, whq030_f, paq605_f)
+
+
+table(analysis_d$smq681_f, analysis_d$bpq020_f)
+```
+
+
+## Main Analysis
+
+
+```{r twoby2_analysis4}
+t1 <- table(analysis_d$smq681_f, analysis_d$bpq020_f)
+
+twoby2(t1 + 2, conf.level = 0.90) 
+  # uses Bayesian augmentation, 90% confidence level
+```
+
+
+- The relative risk of hypertension given the subject is a smoker vs hypertension in non-smokers, which is estimated to be 1.04, and based on its 90% confidence interval is clearly not detectably different from 1 at $\alpha = 0.10$.
+- The odds ratio describing the odds of hypertension given smokers vs non smokers, which is estimated to be 1.06, and is clearly not detectably different from 1 at $\alpha = 0.10$.
+
+
+
+## Conclusions
+
+Our primary conclusions about the study we've done here in Analysis D is motivated by the fact that the 90% confidence intervals for the RR and the OR cross 1, and that the probability difference isn't detectably different from 0, either, with 90% confidence.
+
+
+# Analysis E: Two-Way (2 x 3) Contingency Table
+
+## The Question
+
+I'll look at the association of two categorical factors we created earlier: `weight_history` and `hypertension` in this analysis. We're interested in whether there is an association between the subjects hypertension across the subjects in different weight categories. 
+
+My research Question - Is there a statistically detectable difference between hypertension across different weight categories?
+
+
+## Describing the Data
+
+Let's store this initial table of interest as `table_E1` 
+
+```{r}
+analysis_e <- study1 |> select(seqn, ridstatr, ridageyr, riagendr_f, bpxosy1, drqsprep_f, bpq020_f, smq681_f, whq030_f, paq605_f)
+
+table_E1 <- table(analysis_e$bpq020_f, analysis_e$whq030_f)
+
+table_E1
+```
+
+We could add the marginal totals, I suppose.
+
+```{r medium_fiction_table}
+analysis_e |>
+  tabyl(bpq020_f, whq030_f) |>
+  adorn_totals(where = c("row", "col"))
+```
+
+
+## Main Analysis
+
+### Running the Pearson $\chi^2$ Test
+
+I'll run the Pearson $\chi^2$ test using:
+
+```{r pearson_chi-square_table_E1}
+chisq.test(table_E1)
+```
+Since the p value is extremely small, we would retain the null hypothesis, suggesting that there is no difference in the distribution of hypertension (yes or no) in all three categories of weight.
+
+
+### Checking Assumptions - The Cochran Conditions
+
+The "Cochran conditions", which require that we have:
+
+- no cells with 0 counts
+- at least 80% of the cells in our table with counts of 5 or higher
+- expected counts in each cell of the table should be 5 or more
+
+
+### An Association Plot for the 2x3 Table
+
+The `assocplot` function in R produces a plot that indicates deviations from the assumption of independence of rows and columns in a two-way table. 
+```{r assoc_plot_table_E1, fig.height = 8}
+
+assocplot(table_E1, main= "Association plot")
+```
+
+We can see that the independence model really doesn't work well for the cells with larger shapes here, which we note especially in the overweight and ideal weight categories. .
+
+
+## Conclusions
+
+There's no statistically detectable difference in hypertension among the three weight categories. 
+
+# Session Information
+
+
+```{r}
+sessionInfo()
+```
+
